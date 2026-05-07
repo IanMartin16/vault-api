@@ -247,15 +247,6 @@ def require_scope(required_scope: str):
     ) -> AuthContext:
         _, auth_context = user_and_context
 
-        logger.warning(
-            "scope_check_executed",
-            required_scope=required_scope,
-            auth_method=auth_context.auth_method.value,
-            api_key_id=str(auth_context.api_key_id) if auth_context.api_key_id else None,
-            scopes=list(auth_context.scopes),
-            has_scope=auth_context.has_scope(required_scope)
-        )
-
         if not auth_context.has_scope(required_scope):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

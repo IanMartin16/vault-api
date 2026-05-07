@@ -6,6 +6,7 @@ from app.api.deps import get_db, get_current_user, get_current_user_only
 from app.models.user import User
 from app.schemas.user import UserResponse
 from app.schemas.api_key import APIKeyCreate, APIKeyResponse, APIKeyWithSecret
+from app.services.api_key_service import APIKeyService
 from app.services.user_service import UserService
 from uuid import UUID
 
@@ -68,7 +69,7 @@ async def revoke_api_key(
     db: AsyncSession = Depends(get_db)
 ):
     """Revoke an API key."""
-    service = UserService(db)
+    service = APIKeyService(db)
     revoked = await service.revoke_api_key(current_user.id, key_id)
     
     if not revoked:
