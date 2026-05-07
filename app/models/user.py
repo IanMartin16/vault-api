@@ -58,7 +58,7 @@ class APIKey(Base):
     key_prefix = Column(String(20), nullable=False)  # First chars for display
     
     # Permissions (for future RBAC)
-    scopes = Column(String(500), default="*")  # Comma-separated
+    scopes = Column(String(500), default="projects:read,secrets:read,secrets:reveal")  # Comma-separated
     
     # Status
     is_active = Column(Boolean, default=True)

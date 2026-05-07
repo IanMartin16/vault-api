@@ -5,20 +5,23 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from app.models.user import User, APIKey
-from app.schemas.user import UserCreate, UserResponse, APIKeyCreate, APIKeyWithSecret
+from app.models.secret import Project
+from app.schemas.user import UserCreate, UserResponse
+from app.schemas.api_key import (
+    APIKeyCreate,
+    APIKeyWithSecret,
+    ALLOWED_API_KEY_SCOPES,
+)
 from app.core.security import (
-    get_password_hash, 
-    verify_password, 
-    create_access_token,
-    create_refresh_token,
+    get_password_hash,
+    verify_password,
     generate_api_key,
-    hash_api_key
+    hash_api_key,
 )
 from app.core.config import get_settings
 from app.core.exceptions import (
-    UnauthorizedError,
     ForbiddenError,
-    DuplicateSecretError
+    DuplicateUserError,
 )
 
 settings = get_settings()
@@ -39,7 +42,7 @@ class UserService:
         existing_user = result.scalar_one_or_none()
         
         if existing_user:
-            raise DuplicateSecretError(f"User with email {user_data.email} already exists")
+            raise DuplicateUserError("User already exists")
         
         # Hash password
         hashed_password = get_password_hash(user_data.password)
@@ -94,23 +97,45 @@ class UserService:
         return result.scalar_one_or_none()
     
     async def create_api_key(
-        self, 
-        user_id: UUID, 
+        self,
+        user_id: UUID,
         key_data: APIKeyCreate
     ) -> APIKeyWithSecret:
         """Create a new API key for a user."""
-        
-        # Generate API key
+
+        if key_data.project_id is not None:
+            stmt = select(Project).where(
+                Project.id == key_data.project_id,
+                Project.owner_id == user_id
+            )
+            result = await self.db.execute(stmt)
+            project = result.scalar_one_or_none()
+
+            if not project:
+                raise ForbiddenError("Project not found or access denied")
+
+        requested_scopes = [scope.strip() for scope in (key_data.scopes or [])]
+
+        invalid_scopes = [
+            scope for scope in requested_scopes
+            if scope not in ALLOWED_API_KEY_SCOPES
+        ]
+
+        if invalid_scopes:
+            raise ForbiddenError("Invalid API key scope")
+
+        normalized_scopes = sorted(set(requested_scopes))
+        if not normalized_scopes:
+            normalized_scopes = ["projects:read", "secrets:read", "secrets:reveal"]
+
         api_key = generate_api_key()
         key_hash = hash_api_key(api_key)
-        key_prefix = api_key[:12]  # First 12 chars for display
-        
-        # Calculate expiration
+        key_prefix = api_key[:18]  # First 18 chars for display
+
         expires_at = None
-        if key_data.expires_in_days:
+        if key_data.expires_in_days is not None:
             expires_at = datetime.utcnow() + timedelta(days=key_data.expires_in_days)
-        
-        # Create API key record
+
         api_key_record = APIKey(
             user_id=user_id,
             project_id=key_data.project_id,
@@ -118,24 +143,25 @@ class UserService:
             key_hash=key_hash,
             key_prefix=key_prefix,
             expires_at=expires_at,
+            scopes=",".join(normalized_scopes),
             is_active=True
         )
-        
+
         self.db.add(api_key_record)
         await self.db.commit()
         await self.db.refresh(api_key_record)
-        
-        # Return with the plain API key (only shown once!)
+
         return APIKeyWithSecret(
             id=api_key_record.id,
             name=api_key_record.name,
             key_prefix=api_key_record.key_prefix,
             project_id=api_key_record.project_id,
+            scopes=api_key_record.scopes,
             is_active=api_key_record.is_active,
             created_at=api_key_record.created_at,
             expires_at=api_key_record.expires_at,
             last_used_at=api_key_record.last_used_at,
-            api_key=api_key  # Plain text - only returned on creation
+            api_key=api_key
         )
     
     async def list_user_api_keys(self, user_id: UUID) -> list[APIKey]:
@@ -162,4 +188,4 @@ class UserService:
         
         api_key.is_active = False
         await self.db.commit()
-        return True
+        return True  

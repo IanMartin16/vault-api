@@ -3,6 +3,7 @@ from typing import Optional
 from jose import jwt
 from passlib.context import CryptContext
 import secrets
+import hmac
 import hashlib
 
 from app.core.config import get_settings
@@ -88,10 +89,15 @@ def generate_api_key() -> str:
 
 def hash_api_key(api_key: str) -> str:
     """
-    Hash an API key for storage.
-    We store hashes, not plain keys, for security.
+    Hash an API key for storage using HMAC-SHA256 with server-side pepper.
     """
-    return hashlib.sha256(api_key.encode()).hexdigest()
+    pepper = settings.API_KEY_PEPPER.encode("utf-8")
+
+    return hmac.new(
+        pepper,
+        api_key.strip().encode("utf-8"),
+        hashlib.sha256
+        ).hexdigest()
 
 def generate_secret_share_token() -> str:
     """

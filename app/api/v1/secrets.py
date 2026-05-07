@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 import structlog
 
-from app.api.deps import get_db, get_current_user, verify_project_access, get_crypto_service
+from app.api.deps import get_db, get_current_user, get_current_user_only, verify_project_access, get_crypto_service
 from app.models.user import User
 from app.schemas.secret import (
     SecretCreate, 
@@ -13,13 +13,20 @@ from app.schemas.secret import (
     SecretVersionResponse
 )
 from app.services.secret_service import SecretService
+from app.api.deps import require_scope
+from app.core.exceptions import (
+    DuplicateSecretError,
+    SecretLimitExceededError,
+    ProjectNotFoundError,
+    SecretNotFoundError
+)
 
 router = APIRouter()
 logger = structlog.get_logger()
 
 
 @router.post(
-    "/projects/{project_id}/secrets/{key}", 
+    "/projects/{project_id}/secrets", 
     response_model=SecretResponse,
     status_code=status.HTTP_201_CREATED
 )
@@ -27,9 +34,10 @@ async def create_secret(
     project_id: UUID,
     secret: SecretCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    user_and_context: tuple = Depends(get_current_user),
     crypto = Depends(get_crypto_service),
-    _ = Depends(verify_project_access)
+    _ = Depends(verify_project_access),
+    __ = Depends(require_scope("secrets:write"))
 ):
     """
     Create a new secret with AES-256-GCM encryption.
@@ -47,8 +55,11 @@ async def create_secret(
     **Security:**
     - Value is encrypted before storage
     - Never logged in plaintext
-    - Access is audited
+    - Access is audited with auth method
     """
+    from app.core.auth_context import AuthContext
+    
+    current_user, auth_context = user_and_context
     service = SecretService(db, crypto)
     
     try:
@@ -63,56 +74,75 @@ async def create_secret(
             secret_id=str(new_secret.id),
             project_id=str(project_id),
             key=new_secret.key,
-            user_id=str(current_user.id)
+            user_id=str(current_user.id),
+            auth_method=auth_context.auth_method.value,
+            api_key_id=str(auth_context.api_key_id) if auth_context.api_key_id else None
         )
         
         return new_secret
     
-    except Exception as e:
-        logger.error(
+    except (DuplicateSecretError, SecretLimitExceededError, ProjectNotFoundError) as e:
+        # Expected errors: return specific message
+        logger.warning(
             "secret_creation_failed",
-            error=str(e),
+            error_type=type(e).__name__,
             project_id=str(project_id),
-            key=secret.key
+            key=secret.key,
+            user_id=str(current_user.id)
         )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=e.status_code,
             detail=str(e)
+        )
+    
+    except Exception as e:
+        # Unexpected errors: log but don't expose details
+        logger.error(
+            "secret_creation_error",
+            error_type=type(e).__name__,
+            project_id=str(project_id),
+            key=secret.key,
+            user_id=str(current_user.id)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while creating the secret. Please try again."
         )
 
 
-@router.get("/projects/{project_id}/secrets/{key}", response_model=SecretWithValue)
-async def get_secret(
+@router.get("/projects/{project_id}/secrets/{key}", response_model=SecretResponse)
+async def get_secret_metadata(
     project_id: UUID,
     key: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_only),
     crypto = Depends(get_crypto_service),
-    _ = Depends(verify_project_access)
+    _ = Depends(verify_project_access),
+    __ = Depends(require_scope("secrets:read"))
 ):
     """
-    Get a secret by key with decrypted value.
+    Get secret metadata (without decrypted value).
     
-    **Security:**
-    - Value is decrypted on-the-fly
-    - Access is logged for audit
-    - Updates last_accessed_at timestamp
+    **Safe for GET:** Returns only metadata, no sensitive values.
+    Use POST /reveal to get the decrypted value.
     
-    **Note:** The decrypted value is returned in the response.
-    Ensure you're using HTTPS in production.
+    **Returns:**
+    - Key, description, tags, version
+    - Timestamps (created, updated, last accessed)
+    - NO decrypted value
     """
     service = SecretService(db, crypto)
     
-    secret = await service.get_secret(project_id, key, include_value=True)
+    secret = await service.get_secret_metadata(project_id, key)
     
     if not secret:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Secret '{key}' not found"
+            detail="Secret not found or access denied"
         )
     
     logger.info(
-        "secret_accessed",
+        "secret_metadata_accessed",
         project_id=str(project_id),
         key=key,
         user_id=str(current_user.id)
@@ -121,15 +151,65 @@ async def get_secret(
     return secret
 
 
-@router.get("/projects/{project_id}/secrets/{key}", response_model=list[SecretResponse])
+@router.post("/projects/{project_id}/secrets/{key}/reveal", response_model=SecretWithValue)
+async def reveal_secret(
+    project_id: UUID,
+    key: str,
+    db: AsyncSession = Depends(get_db),
+    user_and_context: tuple = Depends(get_current_user),
+    crypto = Depends(get_crypto_service),
+    _ = Depends(verify_project_access),
+    __ = Depends(require_scope("secrets:reveal"))
+):
+    """
+    Reveal secret value (decrypted).
+    
+    **Security:**
+    - POST method prevents value from appearing in logs/history
+    - Value is decrypted on-the-fly
+    - Access is logged in audit trail with auth method
+    - Updates last_accessed_at timestamp
+    
+    **IMPORTANT:** Use HTTPS in production. The decrypted value is returned
+    in the response body.
+    """
+    from app.core.auth_context import AuthContext
+    
+    current_user, auth_context = user_and_context
+    service = SecretService(db, crypto)
+    
+    secret = await service.reveal_secret(project_id, key)
+    
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Secret not found or access denied"
+        )
+    
+    # Enhanced logging with auth method
+    logger.info(
+        "secret_revealed",
+        project_id=str(project_id),
+        key=key,
+        user_id=str(current_user.id),
+        auth_method=auth_context.auth_method.value,  # JWT or API_KEY
+        api_key_id=str(auth_context.api_key_id) if auth_context.api_key_id else None,
+        version=secret.version
+    )
+    
+    return secret
+
+
+@router.get("/projects/{project_id}/secrets", response_model=list[SecretResponse])
 async def list_secrets(
     project_id: UUID,
     skip: int = Query(0, ge=0, description="Number of secrets to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Max secrets to return"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_only),
     crypto = Depends(get_crypto_service),
-    _ = Depends(verify_project_access)
+    _ = Depends(verify_project_access),
+    __ = Depends(require_scope("secrets:read"))
 ):
     """
     List all secrets in a project.
@@ -150,9 +230,10 @@ async def update_secret(
     key: str,
     secret_update: SecretUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_only),
     crypto = Depends(get_crypto_service),
-    _ = Depends(verify_project_access)
+    _ = Depends(verify_project_access),
+    __ = Depends(require_scope("secrets:write"))
 ):
     """
     Update a secret.
@@ -188,16 +269,32 @@ async def update_secret(
         
         return updated_secret
     
-    except Exception as e:
-        logger.error(
+    except (SecretNotFoundError, ProjectNotFoundError) as e:
+        # Expected errors: return specific message
+        logger.warning(
             "secret_update_failed",
-            error=str(e),
+            error_type=type(e).__name__,
             project_id=str(project_id),
-            key=key
+            key=key,
+            user_id=str(current_user.id)
         )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=e.status_code,
             detail=str(e)
+        )
+    
+    except Exception as e:
+        # Unexpected errors: log but don't expose details
+        logger.error(
+            "secret_update_error",
+            error_type=type(e).__name__,
+            project_id=str(project_id),
+            key=key,
+            user_id=str(current_user.id)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while updating the secret. Please try again."
         )
 
 
@@ -209,9 +306,10 @@ async def delete_secret(
     project_id: UUID,
     key: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_only),
     crypto = Depends(get_crypto_service),
-    _ = Depends(verify_project_access)
+    _ = Depends(verify_project_access),
+    __ = Depends(require_scope("secrets:delete"))
 ):
     """
     Delete a secret (soft delete).
@@ -229,7 +327,7 @@ async def delete_secret(
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Secret '{key}' not found"
+            detail="Secret not found or access denied"
         )
     
     logger.warning(
@@ -249,9 +347,10 @@ async def get_secret_versions(
     key: str,
     limit: int = Query(10, ge=1, le=100, description="Max versions to return"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_only),
     crypto = Depends(get_crypto_service),
-    _ = Depends(verify_project_access)
+    _ = Depends(verify_project_access),
+    __ = Depends(require_scope("secrets:read"))
 ):
     """
     Get version history of a secret.
@@ -266,14 +365,29 @@ async def get_secret_versions(
     try:
         versions = await service.get_secret_versions(project_id, key, limit)
         return versions
-    except Exception as e:
-        logger.error(
+    
+    except SecretNotFoundError as e:
+        # Expected error: safe to show message
+        logger.warning(
             "version_history_failed",
-            error=str(e),
+            error_type=type(e).__name__,
             project_id=str(project_id),
             key=key
         )
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=e.status_code,
             detail=str(e)
+        )
+    
+    except Exception as e:
+        # Unexpected errors: log but don't expose details
+        logger.error(
+            "version_history_error",
+            error_type=type(e).__name__,
+            project_id=str(project_id),
+            key=key
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while retrieving version history. Please try again."
         )

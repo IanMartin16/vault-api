@@ -43,8 +43,13 @@ class InvalidSecretValueError(VaultAPIException):
         super().__init__(message, status.HTTP_400_BAD_REQUEST)
 
 class DuplicateSecretError(VaultAPIException):
-    """Raised when trying to create a secret/project with duplicate key/name."""
-    def __init__(self, message: str = "Resource with this identifier already exists"):
+    """Raised when trying to create a secret with duplicate key."""
+    def __init__(self, message: str = "A secret with this key already exists"):
+        super().__init__(message, status.HTTP_409_CONFLICT)
+
+class DuplicateProjectError(VaultAPIException):
+    """Raised when trying to create a project with duplicate name."""
+    def __init__(self, message: str = "A project with this name already exists"):
         super().__init__(message, status.HTTP_409_CONFLICT)
 
 class EncryptionError(VaultAPIException):
@@ -57,3 +62,13 @@ class RateLimitError(VaultAPIException):
     def __init__(self, message: str = "Rate limit exceeded", retry_after: int = 60):
         super().__init__(message, status.HTTP_429_TOO_MANY_REQUESTS)
         self.retry_after = retry_after
+
+class APIKeyNotFoundError(VaultAPIException):
+    """Raised when API key is not found."""
+    def __init__(self, message: str = "API key not found"):
+        super().__init__(message, status.HTTP_404_NOT_FOUND)
+
+class DuplicateUserError(VaultAPIException):
+    """Raised when a user already exists."""
+    def __init__(self, message: str = "User already exists"):
+        super().__init__(message, 400)        

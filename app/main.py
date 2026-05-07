@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from starlette import status
 from contextlib import asynccontextmanager
 import redis.asyncio as redis
 import structlog
@@ -106,19 +107,22 @@ async def vault_exception_handler(request: Request, exc: VaultAPIException):
     )
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handle validation errors."""
-    logger.warning(
-        "validation_error",
-        errors=exc.errors(),
-        path=request.url.path
-    )
-    
+async def validation_exception_handler(request, exc: RequestValidationError):
+    sanitized_errors = []
+
+    for error in exc.errors():
+        sanitized_errors.append({
+            "type": error.get("type"),
+            "loc": error.get("loc"),
+            "msg": error.get("msg"),
+            "input": error.get("input"),
+        })
+
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "error": "Validation error",
-            "details": exc.errors()
+            "details": sanitized_errors
         }
     )
 

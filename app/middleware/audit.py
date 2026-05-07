@@ -61,7 +61,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                     status_code=response.status_code,
                     ip_address=request.client.host if request.client else None,
                     user_agent=request.headers.get("user-agent", "")[:500],
-                    metadata={"duration_ms": duration_ms}
+                    event_metadata={"duration_ms": duration_ms}  # Changed from metadata
                 )
                 db.add(audit_log)
                 await db.commit()

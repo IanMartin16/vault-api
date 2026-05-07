@@ -3,10 +3,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 import structlog
 
-from app.api.deps import get_db, get_current_user
+from app.api.deps import get_db, get_current_user_only
 from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.services.project_service import ProjectService
+from app.core.exceptions import (
+    ProjectNotFoundError,
+    DuplicateProjectError,
+    ProjectLimitExceededError
+)
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -16,7 +21,7 @@ logger = structlog.get_logger()
 async def create_project(
     project: ProjectCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_only)
 ):
     """
     Create a new project.
@@ -40,11 +45,29 @@ async def create_project(
             name=new_project.name
         )
         return new_project
-    except Exception as e:
-        logger.error("project_creation_failed", error=str(e), user_id=str(current_user.id))
+    
+    except (DuplicateProjectError, ProjectLimitExceededError) as e:
+        # Expected errors: safe to show message
+        logger.warning(
+            "project_creation_failed",
+            error_type=type(e).__name__,
+            user_id=str(current_user.id)
+        )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=e.status_code,
             detail=str(e)
+        )
+    
+    except Exception as e:
+        # Unexpected errors: log but don't expose details
+        logger.error(
+            "project_creation_error",
+            error_type=type(e).__name__,
+            user_id=str(current_user.id)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while creating the project. Please try again."
         )
 
 
@@ -53,7 +76,7 @@ async def list_projects(
     skip: int = Query(0, ge=0, description="Number of projects to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Max number of projects to return"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_only)
 ):
     """
     List all projects for the current user.
@@ -70,7 +93,7 @@ async def list_projects(
 async def get_project(
     project_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_only)
 ):
     """
     Get a specific project by ID.
@@ -94,7 +117,7 @@ async def update_project(
     project_id: UUID,
     project_data: ProjectUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_only)
 ):
     """
     Update a project.
@@ -116,11 +139,31 @@ async def update_project(
             user_id=str(current_user.id)
         )
         return updated_project
-    except Exception as e:
-        logger.error("project_update_failed", error=str(e), project_id=str(project_id))
+    
+    except (ProjectNotFoundError, DuplicateProjectError) as e:
+        # Expected errors: safe to show message
+        logger.warning(
+            "project_update_failed",
+            error_type=type(e).__name__,
+            project_id=str(project_id),
+            user_id=str(current_user.id)
+        )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=e.status_code,
             detail=str(e)
+        )
+    
+    except Exception as e:
+        # Unexpected errors: log but don't expose details
+        logger.error(
+            "project_update_error",
+            error_type=type(e).__name__,
+            project_id=str(project_id),
+            user_id=str(current_user.id)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while updating the project. Please try again."
         )
 
 
@@ -128,7 +171,7 @@ async def update_project(
 async def delete_project(
     project_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_only)
 ):
     """
     Delete a project.

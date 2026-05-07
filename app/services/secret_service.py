@@ -64,7 +64,12 @@ class SecretService:
         )
         
         # Encrypt the secret value
-        encrypted = self.crypto.encrypt_secret(secret_data.value, dek)
+        encrypted = self.crypto.encrypt_secret(secret_data.value, 
+                                               dek,
+                                               project_id=str(project_id),
+                                               secret_key=secret_data.key,
+                                               version=1
+                                               )
         
         # Create secret record
         secret = Secret(
@@ -83,13 +88,12 @@ class SecretService:
         
         return secret
     
-    async def get_secret(
+    async def get_secret_metadata(
         self, 
         project_id: UUID, 
-        key: str,
-        include_value: bool = True
-    ) -> Optional[SecretWithValue]:
-        """Get a secret by key with decryption."""
+        key: str
+    ) -> Optional[SecretResponse]:
+        """Get secret metadata without decrypting the value (safe for GET)."""
         
         stmt = select(Secret).where(
             and_(
@@ -104,34 +108,7 @@ class SecretService:
         if not secret:
             return None
         
-        # Update last accessed timestamp
-        secret.last_accessed_at = datetime.utcnow()
-        await self.db.commit()
-        
-        if include_value:
-            # Get project to derive DEK
-            project = await self._get_project(project_id)
-            dek, _ = self.crypto.derive_dek(
-                str(project_id),
-                base64.b64decode(project.dek_salt)
-            )
-            
-            # Decrypt the secret
-            decrypted = self.crypto.decrypt_secret(secret.encrypted_value, dek)
-            
-            return SecretWithValue(
-                id=secret.id,
-                project_id=secret.project_id,
-                key=secret.key,
-                description=secret.description,
-                tags=secret.tags,
-                version=secret.version,
-                created_at=secret.created_at,
-                updated_at=secret.updated_at,
-                last_accessed_at=secret.last_accessed_at,
-                value=decrypted
-            )
-        
+        # Return metadata only (no value)
         return SecretResponse(
             id=secret.id,
             project_id=secret.project_id,
@@ -142,6 +119,59 @@ class SecretService:
             created_at=secret.created_at,
             updated_at=secret.updated_at,
             last_accessed_at=secret.last_accessed_at
+        )
+    
+    async def reveal_secret(
+        self, 
+        project_id: UUID, 
+        key: str
+    ) -> Optional[SecretWithValue]:
+        """Reveal secret value (decrypt) - should only be called via POST."""
+        
+        stmt = select(Secret).where(
+            and_(
+                Secret.project_id == project_id,
+                Secret.key == key,
+                Secret.is_deleted == False
+            )
+        )
+        result = await self.db.execute(stmt)
+        secret = result.scalar_one_or_none()
+        
+        if not secret:
+            return None
+        
+        # Get project to derive DEK
+        project = await self._get_project(project_id)
+        dek, _ = self.crypto.derive_dek(
+            str(project_id),
+            base64.b64decode(project.dek_salt)
+        )
+        
+        # Decrypt the secret
+        decrypted = self.crypto.decrypt_secret(
+            secret.encrypted_value, 
+            dek,
+            project_id=str(project_id),
+            secret_key=secret.key,
+            version=secret.version
+        )
+
+        secret.last_accessed_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(secret)
+        
+        return SecretWithValue(
+            id=secret.id,
+            project_id=secret.project_id,
+            key=secret.key,
+            description=secret.description,
+            tags=secret.tags,
+            version=secret.version,
+            created_at=secret.created_at,
+            updated_at=secret.updated_at,
+            last_accessed_at=secret.last_accessed_at,
+            value=decrypted
         )
     
     async def list_secrets(
@@ -205,33 +235,38 @@ class SecretService:
         secret = result.scalar_one_or_none()
         
         if not secret:
-            raise SecretNotFoundError(f"Secret '{key}' not found")
+            raise SecretNotFoundError("Secret not found or access denied")
         
         # If value is being updated, create new version
-        if update_data.value:
-            # Archive current version (keep last N versions based on config)
+        if update_data.value is not None:
             version = SecretVersion(
-                secret_id=secret.id,
-                version=secret.version,
-                encrypted_value=secret.encrypted_value,
-                created_by=user_id
-            )
-            self.db.add(version)
-            
-            # Encrypt new value
-            project = await self._get_project(project_id)
-            dek, _ = self.crypto.derive_dek(
-                str(project_id),
-                base64.b64decode(project.dek_salt)
-            )
-            encrypted = self.crypto.encrypt_secret(update_data.value, dek)
-            
-            # Update secret with new encrypted value
-            secret.encrypted_value = encrypted
-            secret.version += 1
-            
-            # Clean up old versions (keep only last MAX_SECRET_VERSIONS)
-            await self._cleanup_old_versions(secret.id)
+            secret_id=secret.id,
+            version=secret.version,
+            encrypted_value=secret.encrypted_value,
+            created_by=user_id
+        )
+        self.db.add(version)
+
+        project = await self._get_project(project_id)
+        dek, _ = self.crypto.derive_dek(
+            str(project_id),
+            base64.b64decode(project.dek_salt)
+        )
+
+        new_version = secret.version + 1
+
+        encrypted = self.crypto.encrypt_secret(
+            update_data.value,
+            dek,
+            project_id=str(project_id),
+            secret_key=secret.key,
+            version=new_version
+        )
+
+        secret.encrypted_value = encrypted
+        secret.version = new_version
+
+        await self._cleanup_old_versions(secret.id)
         
         # Update metadata
         if update_data.description is not None:
@@ -291,7 +326,7 @@ class SecretService:
         secret = result.scalar_one_or_none()
         
         if not secret:
-            raise SecretNotFoundError(f"Secret '{key}' not found")
+            raise SecretNotFoundError("Secret not found or access denied")
         
         # Get versions
         stmt = (
@@ -371,4 +406,3 @@ class SecretService:
             for version in versions_to_delete:
                 await self.db.delete(version)
             
-            await self.db.commit()

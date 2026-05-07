@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     API_KEY_LENGTH: int = 32
+    API_KEY_PEPPER: str
     
     # ========================================
     # Database

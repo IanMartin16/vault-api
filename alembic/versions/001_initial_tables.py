@@ -10,30 +10,49 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 import uuid
 
-# revision identifiers, used by Alembic.
 revision = '001_initial'
 down_revision = None
 branch_labels = None
 depends_on = None
 
 
+user_plan_enum = postgresql.ENUM(
+    'free',
+    'starter',
+    'pro',
+    'enterprise',
+    name='user_plan',
+    create_type=False
+)
+
+
 def upgrade() -> None:
-    # Create enum types first
-    op.execute("CREATE TYPE user_plan AS ENUM ('free', 'starter', 'pro', 'enterprise')")
-    
-    # Users table
+    # Create enum type safely
+    op.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_plan') THEN
+            CREATE TYPE user_plan AS ENUM ('free', 'starter', 'pro', 'enterprise');
+        END IF;
+    END$$;
+    """)
+
     op.create_table(
         'users',
         sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
         sa.Column('email', sa.String(255), unique=True, nullable=False, index=True),
         sa.Column('hashed_password', sa.String(255), nullable=False),
         sa.Column('full_name', sa.String(255)),
-        sa.Column('is_active', sa.Boolean(), default=True),
-        sa.Column('is_verified', sa.Boolean(), default=False),
-        sa.Column('plan', postgresql.ENUM('free', 'starter', 'pro', 'enterprise', name='user_plan'), 
-                  default='free', nullable=False),
+        sa.Column('is_active', sa.Boolean(), server_default=sa.text('true')),
+        sa.Column('is_verified', sa.Boolean(), server_default=sa.text('false')),
+        sa.Column(
+            'plan',
+            user_plan_enum,
+            server_default='free',
+            nullable=False
+        ),
         sa.Column('created_at', sa.DateTime(), server_default=sa.func.now()),
-        sa.Column('updated_at', sa.DateTime(), server_default=sa.func.now(), onupdate=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(), server_default=sa.func.now()),
         sa.Column('last_login', sa.DateTime())
     )
     
@@ -44,7 +63,7 @@ def upgrade() -> None:
         sa.Column('owner_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('users.id'), nullable=False),
         sa.Column('name', sa.String(100), nullable=False),
         sa.Column('description', sa.String(500)),
-        sa.Column('environment', sa.String(50), default='production'),
+        sa.Column('environment', sa.String(50), server_default='production'),
         sa.Column('dek_salt', sa.String(255), nullable=False),
         sa.Column('color', sa.String(7), default='#3B82F6'),
         sa.Column('created_at', sa.DateTime(), server_default=sa.func.now()),
@@ -60,9 +79,9 @@ def upgrade() -> None:
         sa.Column('key', sa.String(255), nullable=False, index=True),
         sa.Column('description', sa.String(500)),
         sa.Column('encrypted_value', postgresql.JSON(), nullable=False),
-        sa.Column('version', sa.Integer(), default=1, nullable=False),
-        sa.Column('tags', postgresql.JSON(), default=[]),
-        sa.Column('is_deleted', sa.Boolean(), default=False),
+        sa.Column('version', sa.Integer(), server_default=sa.text('1'), nullable=False),
+        sa.Column('tags', postgresql.JSON(), server_default=sa.text("'[]'::json")),
+        sa.Column('is_deleted', sa.Boolean(), server_default=sa.text('false')),
         sa.Column('created_at', sa.DateTime(), server_default=sa.func.now()),
         sa.Column('updated_at', sa.DateTime(), server_default=sa.func.now(), onupdate=sa.func.now()),
         sa.Column('last_accessed_at', sa.DateTime()),
@@ -89,8 +108,8 @@ def upgrade() -> None:
         sa.Column('name', sa.String(100), nullable=False),
         sa.Column('key_hash', sa.String(64), unique=True, nullable=False, index=True),
         sa.Column('key_prefix', sa.String(20), nullable=False),
-        sa.Column('scopes', sa.String(500), default='*'),
-        sa.Column('is_active', sa.Boolean(), default=True),
+        sa.Column('scopes', sa.String(500), server_default='projects:read,secrets:read,secrets:reveal'),
+        sa.Column('is_active', sa.Boolean(), server_default=sa.text('true')),
         sa.Column('created_at', sa.DateTime(), server_default=sa.func.now()),
         sa.Column('expires_at', sa.DateTime()),
         sa.Column('last_used_at', sa.DateTime())
@@ -124,7 +143,7 @@ def upgrade() -> None:
         sa.Column('request_method', sa.String(10)),
         sa.Column('request_path', sa.String(500)),
         sa.Column('status_code', sa.Integer()),
-        sa.Column('metadata', postgresql.JSON(), default={}),
+        sa.Column('event_metadata', postgresql.JSON(), server_default=sa.text("'{}'::json")),
         sa.Column('created_at', sa.DateTime(), server_default=sa.func.now(), index=True)
     )
 
@@ -137,4 +156,4 @@ def downgrade() -> None:
     op.drop_table('secrets')
     op.drop_table('projects')
     op.drop_table('users')
-    op.execute("DROP TYPE user_plan")
+    op.execute("DROP TYPE IF EXISTS user_plan")

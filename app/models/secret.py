@@ -105,7 +105,7 @@ class AuditLog(Base):
     status_code = Column(Integer)
     
     # Additional metadata - RENOMBRADO
-    event_metadata = Column("metadata", JSON, default=dict)  # ← CAMBIO AQUÍ
+    event_metadata = Column(JSON, default=dict)  # ← CAMBIO AQUÍ
     
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     

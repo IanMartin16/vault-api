@@ -1,17 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.api.deps import get_db
-from app.schemas.user import UserCreate, UserLogin, UserResponse, Token
-from app.services.user_service import UserService
-from app.core.security import create_access_token, create_refresh_token
+from sqlalchemy import select
+from datetime import timedelta
 import structlog
 
-router = APIRouter()
+from app.api.deps import get_db
+from app.schemas.user import UserCreate, UserLogin, Token
+from app.models.user import User
+from app.core.security import verify_password, get_password_hash, create_access_token, create_refresh_token
+from app.core.config import get_settings
+
+settings = get_settings()
 logger = structlog.get_logger()
+router = APIRouter()
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 async def register(
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db)
@@ -19,21 +23,55 @@ async def register(
     """
     Register a new user.
     
-    Creates a new user account with the provided email and password.
+    Creates a new user account and returns access/refresh tokens.
     Email must be unique.
     """
-    service = UserService(db)
+    # Check if user already exists
+    stmt = select(User).where(User.email == user_data.email)
+    result = await db.execute(stmt)
+    existing_user = result.scalar_one_or_none()
     
-    try:
-        user = await service.create_user(user_data)
-        logger.info("user_registered", user_id=str(user.id), email=user.email)
-        return user
-    except Exception as e:
-        logger.error("registration_failed", error=str(e))
+    if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail="Email already registered"
         )
+    
+    # Create new user
+    hashed_password = get_password_hash(user_data.password)
+    new_user = User(
+        email=user_data.email,
+        hashed_password=hashed_password,
+        full_name=user_data.full_name,
+        is_active=True,
+        is_verified=True,  # Auto-verify for MVP (in production, send email)
+        plan="free"
+    )
+    
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+    
+    # Create tokens
+    access_token = create_access_token(
+        subject=str(new_user.id),
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    refresh_token = create_refresh_token(
+        subject=str(new_user.id)
+    )
+    
+    logger.info(
+        "user_registered",
+        user_id=str(new_user.id),
+        email=new_user.email
+    )
+    
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
 
 
 @router.post("/login", response_model=Token)
@@ -42,78 +80,58 @@ async def login(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Login with email and password.
+    Login and get access token.
     
-    Returns JWT access token and refresh token.
+    Validates credentials and returns JWT tokens.
     """
-    service = UserService(db)
+    # Find user
+    stmt = select(User).where(User.email == credentials.email)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
     
-    user = await service.authenticate_user(
-        credentials.email, 
-        credentials.password
-    )
-    
-    if not user:
-        logger.warning("login_failed", email=credentials.email)
+    # Validate credentials
+    if not user or not verify_password(credentials.password, user.hashed_password):
+        logger.warning(
+            "login_failed",
+            email=credentials.email,
+            reason="invalid_credentials"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
+    # Check if user is active
+    if not user.is_active:
+        logger.warning(
+            "login_failed",
+            email=credentials.email,
+            user_id=str(user.id),
+            reason="inactive_account"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is inactive"
+        )
+    
     # Create tokens
-    access_token = create_access_token(subject=str(user.id))
-    refresh_token = create_refresh_token(subject=str(user.id))
-    
-    logger.info("user_logged_in", user_id=str(user.id), email=user.email)
-    
-    return Token(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="bearer"
+    access_token = create_access_token(
+        subject=str(user.id),
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-
-
-@router.post("/refresh", response_model=Token)
-async def refresh(
-    refresh_token: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Refresh access token using refresh token.
-    
-    Returns new access token and refresh token.
-    """
-    from app.core.security import verify_token
-    from uuid import UUID
-    
-    # Verify refresh token
-    payload = verify_token(refresh_token)
-    
-    if not payload or payload.get("type") != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token"
-        )
-    
-    user_id = payload.get("sub")
-    
-    # Verify user still exists and is active
-    service = UserService(db)
-    user = await service.get_user_by_id(UUID(user_id))
-    
-    if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive"
-        )
-    
-    # Create new tokens
-    new_access_token = create_access_token(subject=user_id)
-    new_refresh_token = create_refresh_token(subject=user_id)
-    
-    return Token(
-        access_token=new_access_token,
-        refresh_token=new_refresh_token,
-        token_type="bearer"
+    refresh_token = create_refresh_token(
+        subject=str(user.id)
     )
+    
+    logger.info(
+        "user_logged_in",
+        user_id=str(user.id),
+        email=user.email
+    )
+    
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
