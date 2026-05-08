@@ -355,7 +355,6 @@ class SecretService:
         """Check if user has reached their secret limit."""
         
         # Get user to check plan
-        from app.models.user import User
         stmt = select(User).where(User.id == user_id)
         result = await self.db.execute(stmt)
         user = result.scalar_one_or_none()
@@ -382,7 +381,7 @@ class SecretService:
         
         if secret_count >= max_secrets:
             raise SecretLimitExceededError(
-                f"Secret limit reached for your plan"
+                "Secret limit reached for your plan"
             )
     
     async def _cleanup_old_versions(self, secret_id: UUID) -> None:
