@@ -72,3 +72,13 @@ class DuplicateUserError(VaultAPIException):
     """Raised when a user already exists."""
     def __init__(self, message: str = "User already exists"):
         super().__init__(message, 400)        
+
+class PlanLimitExceededError(VaultAPIException):
+    """Raised when a plan limit is exceeded."""
+    def __init__(self, message: str = "Plan limit exceeded"):
+        super().__init__(message, 403)        
+
+class APIKeyLimitExceededError(VaultAPIException):
+    """Raised when API key limit is exceeded."""
+    def __init__(self, message: str = "API key limit reached for your plan"):
+        super().__init__(message, 403)        

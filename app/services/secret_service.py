@@ -9,6 +9,7 @@ from app.models.secret import Secret, SecretVersion, Project
 from app.models.user import User
 from app.schemas.secret import SecretCreate, SecretUpdate, SecretWithValue, SecretResponse
 from app.core.crypto import CryptoService
+from app.core.plan_limits import get_plan_limits
 from app.core.config import get_settings
 from app.core.exceptions import (
     SecretNotFoundError,
@@ -373,19 +374,15 @@ class SecretService:
         secret_count = count_result.scalar() or 0
         
         # Get limit based on plan
-        limits = {
-            'free': settings.MAX_SECRETS_FREE,  # 50
-            'starter': 200,
-            'pro': 1000,
-            'enterprise': float('inf')
-        }
-        
-        max_secrets = limits.get(user.plan.value, settings.MAX_SECRETS_FREE)
+        limits = get_plan_limits(user.plan.value if hasattr(user.plan, "value") else user.plan)
+        max_secrets = limits["secrets_per_project"]
+
+        if max_secrets is None:
+            return
         
         if secret_count >= max_secrets:
             raise SecretLimitExceededError(
-                f"You have reached the secret limit for your plan ({max_secrets} secrets per project). "
-                f"Upgrade your plan to create more secrets."
+                f"Secret limit reached for your plan"
             )
     
     async def _cleanup_old_versions(self, secret_id: UUID) -> None:

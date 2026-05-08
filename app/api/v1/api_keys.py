@@ -7,7 +7,7 @@ from app.api.deps import get_db, get_current_user_only
 from app.models.user import User
 from app.schemas.api_key import APIKeyCreate, APIKeyResponse, APIKeyWithSecret
 from app.services.api_key_service import APIKeyService
-from app.core.exceptions import APIKeyNotFoundError, ProjectNotFoundError
+from app.core.exceptions import APIKeyNotFoundError, ProjectNotFoundError, APIKeyLimitExceededError, ForbiddenError
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -71,7 +71,7 @@ async def create_api_key(
             api_key=raw_key  # ONLY shown during creation
         )
     
-    except ProjectNotFoundError as e:
+    except (ProjectNotFoundError, APIKeyLimitExceededError, ForbiddenError) as e:
         raise HTTPException(
             status_code=e.status_code,
             detail=str(e)
@@ -81,7 +81,9 @@ async def create_api_key(
         logger.error(
             "api_key_creation_error",
             error_type=type(e).__name__,
-            user_id=str(current_user.id)
+            error=str(e),
+            user_id=str(current_user.id),
+            exc_info=True
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

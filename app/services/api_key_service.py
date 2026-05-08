@@ -9,26 +9,48 @@ from typing import List, Optional
 from uuid import UUID
 import secrets
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import APIKey, User
 from app.models.secret import Project
 from app.schemas.api_key import ALLOWED_API_KEY_SCOPES
-from app.core.exceptions import ForbiddenError
+from app.core.config import get_settings
 from app.core.security import hash_api_key
+from app.core.plan_limits import get_plan_limits
 from app.core.exceptions import (
     APIKeyNotFoundError,
+    APIKeyLimitExceededError,
     ProjectNotFoundError,
-    VaultAPIException
+    ForbiddenError
 )
 
+settings = get_settings()
 
 class APIKeyService:
     """Service for managing API keys."""
     
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def _check_api_key_limit(self, user: User) -> None:
+        limits = get_plan_limits(user.plan.value if hasattr(user.plan, "value") else user.plan)
+        max_api_keys = limits["api_keys"]
+
+        if max_api_keys is None:
+            return
+
+        stmt = select(func.count(APIKey.id)).where(
+            APIKey.user_id == user.id,
+            APIKey.is_active == True
+        )
+        result = await self.db.execute(stmt)
+        api_key_count = result.scalar() or 0
+
+        if api_key_count >= max_api_keys:
+            raise APIKeyLimitExceededError(
+                "API key limit reached for your plan"
+            )        
     
     async def create_api_key(
         self, 
@@ -52,9 +74,11 @@ class APIKeyService:
             
         Security:
             - Raw API key is only returned once during creation
-            - Stored as hash in database
-            - First 12 chars stored as prefix for user reference
+            - Stored as HMAC-SHA256 hash with server-side pepper
+            - First 18 chars stored as prefix for display
         """
+
+        await self._check_api_key_limit(user)
 
         requested_scopes = [scope.strip() for scope in (scopes or [])]
 
@@ -80,9 +104,9 @@ class APIKeyService:
             await self._validate_project_access(user.id, project_id)
         
         # Generate API key: "vault_" + 45 random chars
-        raw_key = self._generate_api_key()
+        raw_key = self._generate_api_key(settings.ENVIRONMENT)
         key_hash = hash_api_key(raw_key)
-        key_prefix = raw_key[:12]  # "vault_abc12"
+        key_prefix = raw_key[:18]  # "vault_abc12"
         
         # Calculate expiration
         expires_at = None
@@ -183,7 +207,7 @@ class APIKeyService:
     
     # Private helper methods
     
-    def _generate_api_key(self, enviroment: str="test") -> str:
+    def _generate_api_key(self, enviroment: str = "test") -> str:
         """
         Generate a secure API key.
         
@@ -198,7 +222,7 @@ class APIKeyService:
         alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
         random_part = ''.join(secrets.choice(alphabet) for _ in range(45))
 
-        prefix ="vsec_live" if enviroment == "production" else "vsec_test"
+        prefix = "vsec_live" if enviroment == "production" else "vsec_test"
         
         return f"{prefix}_{random_part}"
     
@@ -222,9 +246,3 @@ class APIKeyService:
             raise ProjectNotFoundError(
                 "Project not found or access denied"
             )
-
-
-class APIKeyNotFoundError(VaultAPIException):
-    """Raised when API key is not found."""
-    def __init__(self, message: str = "API key not found"):
-        super().__init__(message, 404)

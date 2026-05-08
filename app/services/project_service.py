@@ -7,13 +7,15 @@ import os
 
 from app.models.secret import Project
 from app.models.user import User
+from app.core.plan_limits import get_plan_limits
 from app.schemas.project import ProjectCreate, ProjectUpdate
 from app.core.config import get_settings
 from app.core.exceptions import (
-    ProjectNotFoundError,
+    DuplicateProjectError,
     ForbiddenError,
     ProjectLimitExceededError,
-    DuplicateSecretError
+    DuplicateSecretError,
+    PlanLimitExceededError
 )
 
 settings = get_settings()
@@ -33,7 +35,7 @@ class ProjectService:
         """Create a new project."""
         
         # Check project limit based on user's plan
-        await self._check_project_limit(user)
+        await self._check_project_limit(user) 
         
         # Check for duplicate project name for this user
         stmt = select(Project).where(
@@ -44,9 +46,7 @@ class ProjectService:
         existing_project = result.scalar_one_or_none()
         
         if existing_project:
-            raise DuplicateSecretError(
-                f"Project with name '{project_data.name}' already exists"
-            )
+            raise DuplicateProjectError("Project already exists")
         
         # Generate DEK salt for this project
         dek_salt = base64.b64encode(os.urandom(16)).decode('utf-8')
@@ -139,7 +139,7 @@ class ProjectService:
         project = await self.get_project_by_id(project_id, user_id)
         
         if not project:
-            raise ProjectNotFoundError(f"Project {project_id} not found")
+            raise DuplicateProjectError("Project already exists")
         
         # Update fields if provided
         if project_data.name is not None:
@@ -197,26 +197,20 @@ class ProjectService:
     
     async def _check_project_limit(self, user: User) -> None:
         """Check if user has reached their project limit."""
-        
-        # Count current projects
+
         stmt = select(func.count(Project.id)).where(
             Project.owner_id == user.id
         )
         result = await self.db.execute(stmt)
         project_count = result.scalar() or 0
-        
-        # Get limit based on plan
-        limits = {
-            'free': settings.MAX_PROJECTS_FREE,  # 2
-            'starter': 10,
-            'pro': float('inf'),  # Unlimited
-            'enterprise': float('inf')
-        }
-        
-        max_projects = limits.get(user.plan.value, settings.MAX_PROJECTS_FREE)
-        
+
+        limits = get_plan_limits(user.plan)
+        max_projects = limits["projects"]
+
+        if max_projects is None:
+            return
+
         if project_count >= max_projects:
             raise ProjectLimitExceededError(
-                f"You have reached the project limit for your plan ({max_projects} projects). "
-                f"Upgrade your plan to create more projects."
-            )
+                "Project limit reached for your plan"
+        )

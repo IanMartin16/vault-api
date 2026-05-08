@@ -114,11 +114,20 @@ class Settings(BaseSettings):
     ENABLE_ROTATION: bool = False
     
     # ========================================
-    # Limits
+    # Plan Limits
     # ========================================
-    MAX_SECRETS_FREE: int = 50
     MAX_PROJECTS_FREE: int = 2
+    MAX_PROJECTS_STARTER: int = 10
+    MAX_PROJECTS_PRO: int = 50
+
+    MAX_SECRETS_FREE: int = 50
+    MAX_SECRETS_STARTER: int = 200
+    MAX_SECRETS_PRO: int = 1000
+
     MAX_API_KEYS_FREE: int = 3
+    MAX_API_KEYS_STARTER: int = 10
+    MAX_API_KEYS_PRO: int = 50
+
     MAX_SECRET_SIZE_BYTES: int = 65536
     MAX_SECRET_VERSIONS: int = 10
 
