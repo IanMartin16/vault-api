@@ -2,7 +2,6 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from starlette import status
 from contextlib import asynccontextmanager
 import redis.asyncio as redis
 import structlog
@@ -50,9 +49,16 @@ async def lifespan(app: FastAPI):
         encoding="utf-8",
         decode_responses=True
     )
+    try:
+        await redis_client.ping()
+        logger.info("redis_connected", redis_enabled=bool(settings.REDIS_URL))
+    except Exception as e:
+        logger.error("redis_connection_failed", error_type=type(e).__name__)
+        raise
+
     app.state.redis = redis_client
     
-    logger.info("redis_connected", url=settings.REDIS_URL)
+    logger.info("redis_connected")
     
     yield
     
@@ -152,6 +158,22 @@ async def health_check():
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT
     }
+
+@app.get("/health/deep")
+async def deep_health_check():
+    checks = {
+        "status": "healthy",
+        "version": settings.VERSION,
+        "environment": settings.ENVIRONMENT,
+        "redis": "unknown"
+    }
+    try:
+        await app.state.redis.ping()
+        checks["redis"] = "healthy"
+    except Exception:
+        checks["redis"] = "unhealthy"
+        checks["status"] = "degraded"
+    return checks        
 
 # Root endpoint
 @app.get("/")
