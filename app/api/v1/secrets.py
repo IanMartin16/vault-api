@@ -13,7 +13,7 @@ from app.schemas.secret import (
     SecretVersionResponse
 )
 from app.services.secret_service import SecretService
-from app.api.deps import require_scope
+from app.api.deps import require_scope, enforce_rate_limit
 from app.core.exceptions import (
     DuplicateSecretError,
     SecretLimitExceededError,
@@ -37,7 +37,8 @@ async def create_secret(
     user_and_context: tuple = Depends(get_current_user),
     crypto = Depends(get_crypto_service),
     _ = Depends(verify_project_access),
-    __ = Depends(require_scope("secrets:write"))
+    __ = Depends(require_scope("secrets:write")),
+    ___ = Depends(enforce_rate_limit)
 ):
     """
     Create a new secret with AES-256-GCM encryption.
@@ -57,7 +58,6 @@ async def create_secret(
     - Never logged in plaintext
     - Access is audited with auth method
     """
-    from app.core.auth_context import AuthContext
     
     current_user, auth_context = user_and_context
     service = SecretService(db, crypto)
@@ -118,7 +118,8 @@ async def get_secret_metadata(
     current_user: User = Depends(get_current_user_only),
     crypto = Depends(get_crypto_service),
     _ = Depends(verify_project_access),
-    __ = Depends(require_scope("secrets:read"))
+    __ = Depends(require_scope("secrets:read")),
+    ___ = Depends(enforce_rate_limit)
 ):
     """
     Get secret metadata (without decrypted value).
@@ -159,7 +160,8 @@ async def reveal_secret(
     user_and_context: tuple = Depends(get_current_user),
     crypto = Depends(get_crypto_service),
     _ = Depends(verify_project_access),
-    __ = Depends(require_scope("secrets:reveal"))
+    __ = Depends(require_scope("secrets:reveal")),
+    ___ = Depends(enforce_rate_limit)
 ):
     """
     Reveal secret value (decrypted).
@@ -173,7 +175,6 @@ async def reveal_secret(
     **IMPORTANT:** Use HTTPS in production. The decrypted value is returned
     in the response body.
     """
-    from app.core.auth_context import AuthContext
     
     current_user, auth_context = user_and_context
     service = SecretService(db, crypto)
@@ -233,7 +234,8 @@ async def update_secret(
     current_user: User = Depends(get_current_user_only),
     crypto = Depends(get_crypto_service),
     _ = Depends(verify_project_access),
-    __ = Depends(require_scope("secrets:write"))
+    __ = Depends(require_scope("secrets:write")),
+    ___ = Depends(enforce_rate_limit)
 ):
     """
     Update a secret.
@@ -309,7 +311,8 @@ async def delete_secret(
     current_user: User = Depends(get_current_user_only),
     crypto = Depends(get_crypto_service),
     _ = Depends(verify_project_access),
-    __ = Depends(require_scope("secrets:delete"))
+    __ = Depends(require_scope("secrets:delete")),
+    ___ = Depends(enforce_rate_limit)
 ):
     """
     Delete a secret (soft delete).

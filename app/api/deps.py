@@ -1,5 +1,5 @@
 from typing import Generator, Optional
-from fastapi import Depends, HTTPException, status, Header
+from fastapi import Depends, HTTPException, status, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -14,6 +14,8 @@ from app.core.config import get_settings
 from app.core.crypto import CryptoService
 from app.core.auth_context import AuthContext, AuthMethod
 from app.models.user import User, APIKey
+from app.core.rate_limit import RateLimitService
+from app.core.plan_limits import get_plan_limits
 from app.models.secret import Project
 
 settings = get_settings()
@@ -40,6 +42,20 @@ async def get_db() -> Generator:
             yield session
         finally:
             await session.close()
+
+def get_rate_limit_identifier(
+    request: Request,
+    auth_context: AuthContext,
+) -> str:
+    if auth_context.is_api_key_auth() and auth_context.api_key_id:
+        return f"api_key:{auth_context.api_key_id}"
+
+    if auth_context.is_jwt_auth():
+        return f"user:{auth_context.user_id}"
+
+    client_host = request.client.host if request.client else "unknown"
+    return f"ip:{client_host}"            
+
 
 def get_crypto_service() -> CryptoService:
     """Get initialized crypto service."""
@@ -179,6 +195,28 @@ async def get_current_user(
             detail="No authentication credentials provided",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+async def enforce_rate_limit(
+    request: Request,
+    user_and_context: tuple[User, AuthContext] = Depends(get_current_user),
+    redis = Depends(get_redis),
+):
+    current_user, auth_context = user_and_context
+
+    limits = get_plan_limits(current_user.plan)
+    limit = limits["requests_per_minute"]
+    window_seconds = settings.RATE_LIMIT_WINDOW
+
+    identifier = get_rate_limit_identifier(request, auth_context)
+
+    limiter = RateLimitService(redis)
+    await limiter.check_rate_limit(
+        identifier=identifier,
+        limit=limit,
+        window_seconds=window_seconds
+    )
+
+    return auth_context    
 
 async def get_current_user_only(
     user_and_context: tuple[User, AuthContext] = Depends(get_current_user)
@@ -256,3 +294,25 @@ def require_scope(required_scope: str):
         return auth_context
 
     return dependency
+
+async def enforce_rate_limit(
+    request: Request,
+    user_and_context: tuple[User, AuthContext] = Depends(get_current_user),
+    redis = Depends(get_redis),
+):
+    current_user, auth_context = user_and_context
+
+    limits = get_plan_limits(current_user.plan)
+    limit = limits["requests_per_minute"]
+    window_seconds = settings.RATE_LIMIT_WINDOW
+
+    identifier = get_rate_limit_identifier(request, auth_context)
+
+    limiter = RateLimitService(redis)
+    await limiter.check_rate_limit(
+        identifier=identifier,
+        limit=limit,
+        window_seconds=window_seconds
+    )
+
+    return auth_context

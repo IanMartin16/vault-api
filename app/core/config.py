@@ -120,7 +120,7 @@ class Settings(BaseSettings):
     MAX_PROJECTS_STARTER: int = 10
     MAX_PROJECTS_PRO: int = 50
 
-    MAX_SECRETS_FREE: int = 2
+    MAX_SECRETS_FREE: int = 50
     MAX_SECRETS_STARTER: int = 200
     MAX_SECRETS_PRO: int = 1000
 
