@@ -27,6 +27,7 @@ class APIKeyCreate(BaseModel):
         "projects:read",
         "secrets:read",
         "secrets:reveal",
+        "secrets:write",
     ])
 
     @field_validator("scopes")
