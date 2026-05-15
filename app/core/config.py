@@ -13,9 +13,9 @@ class Settings(BaseSettings):
     # ========================================
     # Application
     # ========================================
-    PROJECT_NAME: str = "v-secrets"
+    PROJECT_NAME: str = "V-Secrets"
     VERSION: str = "1.0.0"
-    DESCRIPTION: str = "Secure Secrets Management API"
+    DESCRIPTION: str = "Production-ready secrets management API with encrypted storage, API key protection, audit logging, soft delete, and secret versioning."
     API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = False
     ENVIRONMENT: str = "production"
