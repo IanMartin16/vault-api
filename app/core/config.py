@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # ========================================
     REDIS_URL: str = "redis://localhost:6379/0"
     CACHE_TTL: int = 300
+    REDIS_CONNECT_TIMEOUT_SECONDS: int = 3
+    REDIS_SOCKET_TIMEOUT_SECONDS: int = 3
+    REDIS_HEALTH_CHECK_INTERVAL_SECONDS: int = 30
     
     # ========================================
     # Rate Limiting
