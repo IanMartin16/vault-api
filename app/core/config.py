@@ -120,14 +120,14 @@ class Settings(BaseSettings):
     # Plan Limits
     # ========================================
     MAX_PROJECTS_FREE: int = 2
-    MAX_PROJECTS_STARTER: int = 10
-    MAX_PROJECTS_PRO: int = 50
+    MAX_PROJECTS_STARTER: int = 5
+    MAX_PROJECTS_PRO: int = 20
 
-    MAX_SECRETS_FREE: int = 50
-    MAX_SECRETS_STARTER: int = 200
+    MAX_SECRETS_FREE: int = 25
+    MAX_SECRETS_STARTER: int = 100
     MAX_SECRETS_PRO: int = 1000
 
-    MAX_API_KEYS_FREE: int = 3
+    MAX_API_KEYS_FREE: int = 2
     MAX_API_KEYS_STARTER: int = 10
     MAX_API_KEYS_PRO: int = 50
 

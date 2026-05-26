@@ -1,9 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 import structlog
 
 from app.api.deps import get_db, get_current_user, get_current_user_only
-from app.models.user import User
+from app.core.plan_limits import get_plan_limits
+from app.models.user import User, APIKey
+from app.models.secret import Project
+from app.models.secret import Secret
 from app.schemas.user import UserResponse
 from app.schemas.api_key import APIKeyCreate, APIKeyResponse, APIKeyWithSecret
 from app.services.api_key_service import APIKeyService
@@ -15,24 +19,66 @@ logger = structlog.get_logger()
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_profile(
-    current_user: User = Depends(get_current_user_only)
+    current_user: User = Depends(get_current_user_only),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get current user profile.
-    
+
     Returns information about the authenticated user including:
     - Email
     - Full name
-    - Account status (active, verified)
-    - Plan tier (free, pro, enterprise)
+    - Account status
+    - Plan tier
     - Registration date
+    - Plan limits
+    - Current usage
     """
     logger.info(
         "user_profile_accessed",
         user_id=str(current_user.id)
     )
-    
-    return current_user
+
+    limits = get_plan_limits(current_user.plan)
+
+    projects_count_result = await db.execute(
+        select(func.count(Project.id)).where(Project.owner_id == current_user.id)
+    )
+    projects_count = projects_count_result.scalar_one()
+
+    secrets_count_result = await db.execute(
+        select(func.count(Secret.id))
+        .join(Project, Secret.project_id == Project.id)
+        .where(Project.owner_id == current_user.id)
+    )
+    secrets_count = secrets_count_result.scalar_one()
+
+    api_keys_count_result = await db.execute(
+        select(func.count(APIKey.id)).where(APIKey.user_id == current_user.id)
+    )
+    api_keys_count = api_keys_count_result.scalar_one()
+
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "is_active": current_user.is_active,
+        "is_verified": current_user.is_verified,
+        "plan": current_user.plan,
+        "created_at": current_user.created_at,
+        "limits": {
+            "projects": limits.get("projects"),
+            "secrets_per_project": limits.get("secrets_per_project"),
+            "api_keys": limits.get("api_keys"),
+            "requests_per_minute": limits.get("requests_per_minute"),
+            "monthly_requests": limits.get("monthly_requests"),
+        },
+        "usage": {
+            "projects": projects_count,
+            "secrets": secrets_count,
+            "api_keys": api_keys_count,
+        },
+    }
 
 
 @router.post("/me/api-keys", response_model=APIKeyWithSecret, status_code=status.HTTP_201_CREATED)

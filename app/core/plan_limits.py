@@ -25,14 +25,14 @@ def get_plan_limits(plan: str) -> dict:
             "monthly_requests": settings.RATE_LIMIT_FREE,
         },
         "starter": {
-            "projects": getattr(settings, "MAX_PROJECTS_STARTER", 10),
-            "secrets_per_project": getattr(settings, "MAX_SECRETS_STARTER", 200),
+            "projects": getattr(settings, "MAX_PROJECTS_STARTER", 5),
+            "secrets_per_project": getattr(settings, "MAX_SECRETS_STARTER", 100),
             "api_keys": getattr(settings, "MAX_API_KEYS_STARTER", 10),
             "requests_per_minute": 300,
             "monthly_requests": settings.RATE_LIMIT_STARTER,
         },
         "pro": {
-            "projects": getattr(settings, "MAX_PROJECTS_PRO", 50),
+            "projects": getattr(settings, "MAX_PROJECTS_PRO", 20),
             "secrets_per_project": getattr(settings, "MAX_SECRETS_PRO", 1000),
             "api_keys": getattr(settings, "MAX_API_KEYS_PRO", 50),
             "requests_per_minute": 1000,
