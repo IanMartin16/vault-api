@@ -122,6 +122,7 @@ async def get_current_user_from_api_key(
     x_api_key: str = Header(..., description="API Key for authentication"),
     db: AsyncSession = Depends(get_db)
 ) -> tuple[User, AuthContext]:
+    
     """Validate API key and return user with auth context."""
     from app.core.security import hash_api_key
 
@@ -175,26 +176,38 @@ async def get_current_user_from_api_key(
     return user, auth_context
 
 async def get_current_user(
+    request: Request,
     x_api_key: Optional[str] = Header(None),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db)
 ) -> tuple[User, AuthContext]:
     """
     Flexible authentication: API key or JWT token.
-    
+
     Returns:
         tuple[User, AuthContext]: Authenticated user and auth context
     """
     if x_api_key:
-        return await get_current_user_from_api_key(x_api_key, db)
+        user, auth_context = await get_current_user_from_api_key(x_api_key, db)
     elif credentials:
-        return await get_current_user_from_token(credentials, db)
+        user, auth_context = await get_current_user_from_token(credentials, db)
     else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="No authentication credentials provided",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Make auth context available to AuditMiddleware
+    request.state.user = user
+    request.state.user_id = user.id
+    request.state.auth_context = auth_context
+    request.state.auth_method = auth_context.auth_method.value
+
+    if auth_context.is_api_key_auth():
+        request.state.api_key_id = auth_context.api_key_id
+
+    return user, auth_context
     
 async def enforce_rate_limit(
     request: Request,
@@ -294,25 +307,3 @@ def require_scope(required_scope: str):
         return auth_context
 
     return dependency
-
-async def enforce_rate_limit(
-    request: Request,
-    user_and_context: tuple[User, AuthContext] = Depends(get_current_user),
-    redis = Depends(get_redis),
-):
-    current_user, auth_context = user_and_context
-
-    limits = get_plan_limits(current_user.plan)
-    limit = limits["requests_per_minute"]
-    window_seconds = settings.RATE_LIMIT_WINDOW
-
-    identifier = get_rate_limit_identifier(request, auth_context)
-
-    limiter = RateLimitService(redis)
-    await limiter.check_rate_limit(
-        identifier=identifier,
-        limit=limit,
-        window_seconds=window_seconds
-    )
-
-    return auth_context
