@@ -80,4 +80,6 @@ class AuditMiddleware(BaseHTTPMiddleware):
             return "api_key"
         elif "/users" in path:
             return "user"
+        elif "/audit-logs" in path:
+            return "audit"
         return "unknown"
