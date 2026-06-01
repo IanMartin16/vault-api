@@ -54,7 +54,8 @@ async def get_current_user_profile(
     secrets_count = secrets_count_result.scalar_one()
 
     api_keys_count_result = await db.execute(
-        select(func.count(APIKey.id)).where(APIKey.user_id == current_user.id)
+        select(func.count(APIKey.id)).where(APIKey.user_id == current_user.id, APIKey.is_active.is_(True)
+                                            )
     )
     api_keys_count = api_keys_count_result.scalar_one()
 
@@ -116,7 +117,7 @@ async def revoke_api_key(
 ):
     """Revoke an API key."""
     service = APIKeyService(db)
-    revoked = await service.revoke_api_key(current_user.id, key_id)
+    revoked = await service.revoke_api_key(key_id=key_id, user_id=current_user.id)
     
     if not revoked:
         raise HTTPException(

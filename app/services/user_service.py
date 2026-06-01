@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.core.exceptions import (
     ForbiddenError,
     DuplicateUserError,
+    APIKeyNotFoundError,
 )
 
 settings = get_settings()
@@ -174,18 +175,33 @@ class UserService:
         result = await self.db.execute(stmt)
         return result.scalars().all()
     
-    async def revoke_api_key(self, user_id: UUID, key_id: UUID) -> bool:
-        """Revoke (soft delete) an API key."""
+    async def revoke_api_key(
+        self,
+        key_id: UUID,
+        user_id: UUID
+    ) -> None:
+        """
+        Revoke/deactivate an API key.
+
+        Idempotent soft delete:
+        - If key exists and is active, mark as inactive.
+        - If key exists and is already inactive, return successfully.
+        - If key does not exist or does not belong to user, raise not found.
+        """
         stmt = select(APIKey).where(
             APIKey.id == key_id,
-            APIKey.user_id == user_id
+            APIKey.user_id == user_id,
         )
+
         result = await self.db.execute(stmt)
         api_key = result.scalar_one_or_none()
-        
+
         if not api_key:
-            return False
-        
+            raise APIKeyNotFoundError("API key not found")
+
+        if not api_key.is_active:
+            return
+
         api_key.is_active = False
         await self.db.commit()
         return True  

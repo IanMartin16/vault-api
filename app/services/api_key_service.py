@@ -178,21 +178,30 @@ class APIKeyService:
     async def revoke_api_key(
         self,
         key_id: UUID,
-        user_id: UUID
+        user_id: UUID,
     ) -> None:
         """
-        Revoke (deactivate) an API key.
-        
-        Soft delete - marks as inactive instead of deleting.
-        
-        Raises:
-            APIKeyNotFoundError: If key doesn't exist or doesn't belong to user
+        Revoke/deactivate an API key.
+
+        Idempotent soft delete:
+        - If key exists and is active, mark as inactive.
+        - If key exists and is already inactive, return successfully.
+        - If key does not exist or does not belong to user, raise not found.
         """
-        api_key = await self.get_api_key_by_id(key_id, user_id)
-        
+        stmt = select(APIKey).where(
+           APIKey.id == key_id,
+           APIKey.user_id == user_id,
+        )
+
+        result = await self.db.execute(stmt)
+        api_key = result.scalar_one_or_none()
+
         if not api_key:
-            raise APIKeyNotFoundError(f"API key not found")
-        
+            raise APIKeyNotFoundError("API key not found")
+
+        if not api_key.is_active:
+            return
+
         api_key.is_active = False
         await self.db.commit()
     
