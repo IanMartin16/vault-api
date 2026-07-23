@@ -1,23 +1,25 @@
-from fastapi import FastAPI, Request, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
+
 import redis.asyncio as redis
 import structlog
-from sqlalchemy import text
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from app.api.health import router as health_router
+from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.exceptions import VaultAPIException
 from app.middleware.audit import AuditMiddleware
-from app.api.v1.router import api_router
-
-# Ajustar este import al nombre real de tu proyecto
-from app.db.session import async_session
 
 settings = get_settings()
 
-# Configure structured logging
+
+# =========================================================
+# Logging
+# =========================================================
+
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -28,8 +30,11 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer() if settings.LOG_FORMAT == "json"
-        else structlog.dev.ConsoleRenderer(),
+        (
+            structlog.processors.JSONRenderer()
+            if settings.LOG_FORMAT == "json"
+            else structlog.dev.ConsoleRenderer()
+        ),
     ],
     wrapper_class=structlog.stdlib.BoundLogger,
     context_class=dict,
@@ -40,12 +45,17 @@ structlog.configure(
 logger = structlog.get_logger()
 
 
+# =========================================================
+# Application lifecycle
+# =========================================================
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Lifespan context manager for startup and shutdown events.
-    """
-    logger.info("starting_application", environment=settings.ENVIRONMENT)
+    logger.info(
+        "starting_application",
+        environment=settings.ENVIRONMENT,
+        version=settings.VERSION,
+    )
 
     redis_client = redis.from_url(
         settings.REDIS_URL,
@@ -56,23 +66,42 @@ async def lifespan(app: FastAPI):
         health_check_interval=settings.REDIS_HEALTH_CHECK_INTERVAL_SECONDS,
     )
 
+    app.state.redis = redis_client
+    app.state.redis_available = False
+
     try:
         await redis_client.ping()
-        logger.info("redis_connected", redis_enabled=bool(settings.REDIS_URL))
-    except Exception as e:
+        app.state.redis_available = True
+
+        logger.info(
+            "redis_connected",
+            redis_enabled=bool(settings.REDIS_URL),
+        )
+    except Exception as exc:
         logger.warning(
             "redis_connection_failed_starting_degraded",
-            error_type=type(e).__name__,
-            error=str(e),
+            error_type=type(exc).__name__,
+            error=str(exc),
         )
 
-    app.state.redis = redis_client
+    try:
+        yield
+    finally:
+        logger.info("shutting_down_application")
 
-    yield
+        try:
+            await redis_client.aclose()
+        except Exception as exc:
+            logger.warning(
+                "redis_shutdown_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
-    logger.info("shutting_down_application")
-    await redis_client.close()
 
+# =========================================================
+# FastAPI application
+# =========================================================
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -83,6 +112,11 @@ app = FastAPI(
     redoc_url=f"{settings.API_V1_PREFIX}/redoc",
     lifespan=lifespan,
 )
+
+
+# =========================================================
+# Middleware
+# =========================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -95,11 +129,39 @@ app.add_middleware(
 if settings.AUDIT_LOG_ENABLED:
     app.add_middleware(AuditMiddleware)
 
-app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
+# =========================================================
+# Routers
+# =========================================================
+
+# Ecosystem health.v1 endpoints:
+# /api/health
+# /api/health/live
+# /api/health/ready
+#
+# Legacy endpoints:
+# /health
+# /health/deep
+# /health/readiness
+app.include_router(health_router)
+
+# Business API:
+# /api/v1/...
+app.include_router(
+    api_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+
+# =========================================================
+# Exception handlers
+# =========================================================
 
 @app.exception_handler(VaultAPIException)
-async def vault_exception_handler(request: Request, exc: VaultAPIException):
+async def vault_exception_handler(
+    request: Request,
+    exc: VaultAPIException,
+) -> JSONResponse:
     logger.error(
         "vault_api_exception",
         error=exc.message,
@@ -117,16 +179,27 @@ async def vault_exception_handler(request: Request, exc: VaultAPIException):
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request, exc: RequestValidationError):
+async def validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
     sanitized_errors = []
 
     for error in exc.errors():
-        sanitized_errors.append({
-            "type": error.get("type"),
-            "loc": error.get("loc"),
-            "msg": error.get("msg"),
-            "input": error.get("input"),
-        })
+        sanitized_errors.append(
+            {
+                "type": error.get("type"),
+                "loc": error.get("loc"),
+                "msg": error.get("msg"),
+                "input": error.get("input"),
+            }
+        )
+
+    logger.warning(
+        "request_validation_failed",
+        path=request.url.path,
+        error_count=len(sanitized_errors),
+    )
 
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -138,9 +211,13 @@ async def validation_exception_handler(request, exc: RequestValidationError):
 
 
 @app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
+async def general_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
     logger.exception(
         "unhandled_exception",
+        error_type=type(exc).__name__,
         error=str(exc),
         path=request.url.path,
     )
@@ -154,107 +231,16 @@ async def general_exception_handler(request: Request, exc: Exception):
     )
 
 
-async def check_database() -> tuple[str, str | None]:
-    try:
-        async with async_session() as session:
-            await session.execute(text("SELECT 1"))
-        return "healthy", None
-    except Exception as e:
-        logger.warning(
-            "database_health_check_failed",
-            error_type=type(e).__name__,
-            error=str(e),
-        )
-        return "unhealthy", type(e).__name__
+# =========================================================
+# Root
+# =========================================================
 
-
-async def check_redis(app: FastAPI) -> tuple[str, str | None]:
-    try:
-        await app.state.redis.ping()
-        return "healthy", None
-    except Exception as e:
-        logger.warning(
-            "redis_health_check_failed",
-            error_type=type(e).__name__,
-            error=str(e),
-        )
-        return "unhealthy", type(e).__name__
-
-
-async def build_dependency_health(app: FastAPI) -> dict:
-    database_status, database_error = await check_database()
-    redis_status, redis_error = await check_redis(app)
-
-    checks = {
-        "api": {
-            "status": "healthy",
-        },
-        "database": {
-            "status": database_status,
-            "error": database_error,
-        },
-        "redis": {
-            "status": redis_status,
-            "error": redis_error,
-        },
-    }
-
-    overall_status = "healthy"
-
-    if database_status != "healthy" or redis_status != "healthy":
-        overall_status = "degraded"
-
-    return {
-        "status": overall_status,
-        "service": settings.PROJECT_NAME,
-        "version": settings.VERSION,
-        "environment": settings.ENVIRONMENT,
-        "checks": checks,
-    }
-
-
-@app.get("/health")
-async def health_check():
-    """
-    Lightweight liveness check.
-    Does not validate external dependencies.
-    """
-    return {
-        "status": "healthy",
-        "service": settings.PROJECT_NAME,
-        "version": settings.VERSION,
-        "environment": settings.ENVIRONMENT,
-    }
-
-
-@app.get("/health/deep")
-async def deep_health_check():
-    """
-    Informational dependency health check.
-    Returns 200 even when degraded.
-    """
-    return await build_dependency_health(app)
-
-
-@app.get("/health/readiness")
-async def readiness_check():
-    """
-    Strict readiness check.
-    Returns 503 if critical dependencies are unavailable.
-    """
-    result = await build_dependency_health(app)
-
-    if result["status"] != "healthy":
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content=result,
-        )
-
-    return result
-
-
-@app.get("/")
-async def root():
+@app.get(
+    "/",
+    tags=["Root"],
+    include_in_schema=False,
+)
+async def root() -> dict[str, str]:
     return {
         "name": settings.PROJECT_NAME,
         "version": settings.VERSION,
