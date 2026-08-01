@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = False
     ENVIRONMENT: str = "production"
+    INTERNAL_PROVISION_SECRET: str = ""
     
     # ========================================
     # Security

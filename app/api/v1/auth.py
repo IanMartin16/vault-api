@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Annotated, Literal, Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import timedelta
@@ -135,3 +138,96 @@ async def login(
         "refresh_token": refresh_token,
         "token_type": "bearer"
     }
+
+class OAuthProvisionRequest(BaseModel):
+    provider: Literal["github", "resend"]
+    provider_account_id: str
+    email: EmailStr
+    name: Optional[str] = None
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+# -----------------------------------------------------------------------------
+# Endpoint
+# -----------------------------------------------------------------------------
+
+@router.post("/oauth-provision", response_model=TokenResponse)
+async def oauth_provision(
+    payload: OAuthProvisionRequest,
+    x_internal_auth: Annotated[Optional[str], Header(alias="X-Internal-Auth")] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Server-to-server endpoint called by NextAuth after successful OAuth.
+    Not exposed to end users — protected by a shared secret in X-Internal-Auth.
+    """
+    # 1. Verify the shared secret (protects against unauthorized user creation)
+    expected = settings.INTERNAL_PROVISION_SECRET
+    if not expected or not x_internal_auth or x_internal_auth != expected:
+        logger.warning(
+            "oauth_provision_forbidden",
+            has_header=bool(x_internal_auth),
+            provider=payload.provider,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden",
+        )
+
+    # 2. Look up user by email
+    stmt = select(User).where(User.email == payload.email)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    # 3. If not found, create with an unusable password hash
+    #    (OAuth users can't sign in via /auth/login with password)
+    if user is None:
+        user = User(
+            email=payload.email,
+            hashed_password="_oauth_disabled_",  # sentinel — never matches bcrypt
+            full_name=payload.name or "",
+            is_active=True,
+            is_verified=True,  # OAuth-verified via provider
+            plan="free",
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        logger.info(
+            "oauth_user_provisioned",
+            user_id=str(user.id),
+            email=user.email,
+            provider=payload.provider,
+        )
+    else:
+        logger.info(
+            "oauth_user_signed_in",
+            user_id=str(user.id),
+            email=user.email,
+            provider=payload.provider,
+        )
+
+    # 4. Guard: don't issue tokens for inactive accounts
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is inactive",
+        )
+
+    # 5. Issue the SAME tokens as the password /auth/login flow
+    access_token = create_access_token(
+        subject=str(user.id),
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    refresh_token = create_refresh_token(subject=str(user.id))
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+    )
