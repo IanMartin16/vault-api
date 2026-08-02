@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # ========================================
     # CORS - CORREGIDO
     # ========================================
-    CORS_ORIGINS: Union[str, list[str]] = "http://localhost:3000,http://localhost:8000"
+    CORS_ORIGINS: Union[str, list[str]] = "http://localhost:3000,http://localhost:8000,https://vsecrets.dev"
     CORS_ALLOW_CREDENTIALS: bool = True
     CORS_ALLOW_METHODS: list[str] = ["*"]
     CORS_ALLOW_HEADERS: list[str] = ["*"]
