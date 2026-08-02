@@ -181,25 +181,31 @@ async def create_checkout_session(
 async def create_portal_session(
     current_user: User = Depends(get_current_user_only),
 ):
-    """
-    Open Stripe's hosted billing portal.
+    """Open Stripe's hosted billing portal."""
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Billing is not configured on this server.",
+        )
 
-    This is where users update their card, download invoices, switch plans, and
-    cancel — all handled by Stripe, all reflected back through webhooks. Building
-    these screens yourself is weeks of work for no differentiation.
-    """
     customer_id = getattr(current_user, "stripe_customer_id", None)
-
     if not customer_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No billing account yet. Subscribe to a plan first.",
         )
 
-    session = stripe.billing_portal.Session.create(
-        customer=customer_id,
-        return_url=f"{settings.FRONTEND_URL}/settings/billing",
-    )
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f"{settings.FRONTEND_URL}/settings/billing",
+        )
+    except stripe.StripeError as exc:
+        logger.error("stripe_portal_failed", user_id=str(current_user.id), error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Stripe error: {exc.user_message or str(exc)}",
+        )
 
     return PortalResponse(url=session.url)
 
