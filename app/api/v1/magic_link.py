@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.core.config import get_settings
-from app.core.database import Base  # adjust if your Base lives elsewhere
 from app.core.security import create_access_token, create_refresh_token
 from app.models.user import MagicLinkToken
 
