@@ -108,6 +108,13 @@ async def create_checkout_session(
     db: AsyncSession = Depends(get_db),
 ):
     """Start a subscription. Returns a Stripe-hosted URL to redirect the user to."""
+    if not settings.STRIPE_SECRET_KEY:
+        logger.error("stripe_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Billing is not configured on this server.",
+        )
+
     plan_config = PLANS.get(payload.plan)
     if not plan_config or not plan_config["price_id"]:
         raise HTTPException(
@@ -115,36 +122,46 @@ async def create_checkout_session(
             detail=f"Unknown or unconfigured plan: {payload.plan}",
         )
 
-    # Reuse the Stripe customer if this user already has one, so their billing
-    # history and payment methods stay on a single record.
     customer_id = getattr(current_user, "stripe_customer_id", None)
 
-    if not customer_id:
-        customer = stripe.Customer.create(
-            email=current_user.email,
-            name=current_user.full_name or None,
-            metadata={"user_id": str(current_user.id)},
-        )
-        customer_id = customer.id
-        current_user.stripe_customer_id = customer_id
-        await db.commit()
+    # Every Stripe call is wrapped: a provider failure should surface as a
+    # readable error, not an unhandled 500 that loses its CORS headers.
+    try:
+        if not customer_id:
+            customer = stripe.Customer.create(
+                email=current_user.email,
+                name=current_user.full_name or None,
+                metadata={"user_id": str(current_user.id)},
+            )
+            customer_id = customer.id
+            current_user.stripe_customer_id = customer_id
+            await db.commit()
 
-    session = stripe.checkout.Session.create(
-        mode="subscription",
-        customer=customer_id,
-        line_items=[{"price": plan_config["price_id"], "quantity": 1}],
-        success_url=f"{settings.FRONTEND_URL}/settings/billing?checkout=success",
-        cancel_url=f"{settings.FRONTEND_URL}/settings/billing?checkout=cancelled",
-        # Metadata travels with the session and shows up on the webhook event.
-        # Carrying user_id here means the webhook never has to guess.
-        metadata={"user_id": str(current_user.id), "plan": payload.plan},
-        subscription_data={
-            "metadata": {"user_id": str(current_user.id), "plan": payload.plan},
-        },
-        allow_promotion_codes=True,
-        billing_address_collection="auto",
-        automatic_tax={"enabled": False},  # flip on once tax registration is set up
-    )
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            customer=customer_id,
+            line_items=[{"price": plan_config["price_id"], "quantity": 1}],
+            success_url=f"{settings.FRONTEND_URL}/settings/billing?checkout=success",
+            cancel_url=f"{settings.FRONTEND_URL}/settings/billing?checkout=cancelled",
+            metadata={"user_id": str(current_user.id), "plan": payload.plan},
+            subscription_data={
+                "metadata": {"user_id": str(current_user.id), "plan": payload.plan},
+            },
+            allow_promotion_codes=True,
+            billing_address_collection="auto",
+        )
+    except stripe.StripeError as exc:
+        logger.error(
+            "stripe_checkout_failed",
+            user_id=str(current_user.id),
+            plan=payload.plan,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Stripe error: {exc.user_message or str(exc)}",
+        )
 
     logger.info(
         "checkout_session_created",
