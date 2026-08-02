@@ -300,6 +300,23 @@ async def _get_user_by_customer(
 
 async def _handle_checkout_completed(session: dict, db: AsyncSession):
     """First successful payment — link the subscription and set the plan."""
+    payment_status = session.get("payment_status")
+    if payment_status not in ("paid", "no_payment_required"):
+        logger.info(
+            "checkout_completed_not_paid",
+            payment_status=payment_status,
+            session_id=session.get("id"),
+        )
+        return
+
+    subscription_id = session.get("subscription")
+    if not subscription_id:
+        logger.warning(
+            "checkout_completed_no_subscription",
+            session_id=session.get("id"),
+        )
+        return
+    
     user_id = (session.get("metadata") or {}).get("user_id")
     plan = (session.get("metadata") or {}).get("plan")
     customer_id = session.get("customer")
