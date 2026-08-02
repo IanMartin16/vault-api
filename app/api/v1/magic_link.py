@@ -8,7 +8,8 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import Column, DateTime, String, func, select
+from sqlalchemy import func, select
+from app.models.user import MagicLinkToken, User
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
