@@ -287,7 +287,16 @@ async def stripe_webhook(
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     event_type = event["type"]
-    data = event["data"]["object"]
+
+    # construct_event returns StripeObject, which doesn't expose dict.get() in
+    # this SDK version. Convert once here so every handler works with a plain
+    # dict instead of guarding each field access.
+    raw_object = event["data"]["object"]
+    data = (
+        raw_object.to_dict_recursive()
+        if hasattr(raw_object, "to_dict_recursive")
+        else dict(raw_object)
+    )
 
     logger.info("stripe_webhook_received", event_type=event_type, event_id=event["id"])
 
