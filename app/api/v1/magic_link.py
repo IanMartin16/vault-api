@@ -28,6 +28,24 @@ MAX_REQUESTS_PER_IP = 10
 RATE_WINDOW_MINUTES = 15
 
 # =============================================================================
+# Schemas
+# =============================================================================
+
+class MagicLinkRequest(BaseModel):
+    email: EmailStr
+
+
+class MagicLinkVerify(BaseModel):
+    token: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+# =============================================================================
 # Helpers
 # =============================================================================
 
