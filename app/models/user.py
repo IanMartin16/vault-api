@@ -12,10 +12,11 @@ class UserPlan(str, enum.Enum):
     FREE = "free"
     STARTER = "starter"
     PRO = "pro"
+    BUSINESS = "business"
     ENTERPRISE = "enterprise"
 
     def __str__(self):
-        return self.value 
+        return self.value
 
 class User(Base):
     __tablename__ = "users"
@@ -90,3 +91,17 @@ class ProjectMember(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     invited_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+
+class MagicLinkToken(Base):
+    """One-time passwordless sign-in token. Only the hash is persisted."""
+    __tablename__ = "magic_link_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+
+    expires_at = Column(DateTime, nullable=False, index=True)
+    consumed_at = Column(DateTime, nullable=True)
+
+    request_ip = Column(String(45), nullable=True, index=True)  # 45 = IPv6 max
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

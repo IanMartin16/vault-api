@@ -144,6 +144,8 @@ class Settings(BaseSettings):
     STRIPE_PRICE_PRO: str = ""
     STRIPE_PRICE_BUSINESS: str = ""
     FRONTEND_URL: str = "https://vsecrets.dev"
+    RESEND_API_KEY: str = ""
+    MAGIC_LINK_FROM: str = "V-Secrets <noreply@vsecrets.dev>"
 
 @lru_cache()
 def get_settings() -> Settings:
