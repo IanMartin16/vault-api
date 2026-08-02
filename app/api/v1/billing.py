@@ -1,31 +1,3 @@
-# =============================================================================
-# ADD TO YOUR FastAPI BACKEND
-# File: app/api/v1/billing.py  (new file)
-# =============================================================================
-#
-# Stripe Checkout integration, hosted flow.
-#
-# Design decisions and why:
-#
-#   1. HOSTED CHECKOUT, not Elements. Stripe hosts the payment page, so card
-#      data never touches your servers and PCI scope stays minimal. Elements is
-#      for when you need UI control you can't get otherwise — you don't.
-#
-#   2. WEBHOOK-FIRST PROVISIONING. The plan is upgraded when the webhook fires,
-#      never when the browser hits the success URL. A user who closes the tab
-#      mid-redirect still gets provisioned; a user who forges a success URL
-#      does not.
-#
-#   3. PINNED API VERSION. Stripe evolves. Without a pin, a change on their
-#      side can break production silently. Verify the version below against
-#      your Stripe dashboard before going live.
-#
-#   4. IDEMPOTENT HANDLERS. Stripe retries webhooks. Every handler here sets
-#      fields to a computed value rather than incrementing or appending, so a
-#      replay is harmless.
-#
-# =============================================================================
-
 from typing import Optional
 
 import stripe
@@ -34,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
+import json
 
 from app.api.deps import get_current_user_only, get_db
 from app.core.config import get_settings
@@ -288,15 +261,11 @@ async def stripe_webhook(
 
     event_type = event["type"]
 
-    # construct_event returns StripeObject, which doesn't expose dict.get() in
-    # this SDK version. Convert once here so every handler works with a plain
-    # dict instead of guarding each field access.
-    raw_object = event["data"]["object"]
-    data = (
-        raw_object.to_dict_recursive()
-        if hasattr(raw_object, "to_dict_recursive")
-        else dict(raw_object)
-    )
+    # construct_event returns StripeObject, which supports key access but not
+    # .get() — and hasattr() on it always returns True, so feature-detecting a
+    # conversion method doesn't work either. Parsing the already-verified raw
+    # body gives plain dicts, which is what the handlers below expect.
+    data = json.loads(raw_body)["data"]["object"]
 
     logger.info("stripe_webhook_received", event_type=event_type, event_id=event["id"])
 
