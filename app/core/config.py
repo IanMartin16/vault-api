@@ -135,6 +135,16 @@ class Settings(BaseSettings):
     MAX_SECRET_SIZE_BYTES: int = 65536
     MAX_SECRET_VERSIONS: int = 10
 
+    # ========================================
+    # Stripe Configuration
+    # ========================================
+
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_PRICE_PRO: str = ""
+    STRIPE_PRICE_BUSINESS: str = ""
+    FRONTEND_URL: str = "https://vsecrets.dev"
+
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
