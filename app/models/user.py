@@ -105,3 +105,12 @@ class MagicLinkToken(Base):
 
     request_ip = Column(String(45), nullable=True, index=True)  # 45 = IPv6 max
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class LoginAttempt(Base):
+    __tablename__ = "login_attempts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), nullable=False, index=True)
+    ip_address = Column(String(45), nullable=True, index=True)
+    succeeded = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)    
