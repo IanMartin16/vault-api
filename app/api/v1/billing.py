@@ -428,37 +428,3 @@ async def _handle_payment_failed(invoice: dict, db: AsyncSession):
         attempt=invoice.get("attempt_count"),
     )
 
-
-# =============================================================================
-# WIRING CHECKLIST
-# =============================================================================
-#
-# 1. requirements.txt:
-#        stripe>=11.0.0
-#
-# 2. app/models/user.py — add these columns:
-#
-#        stripe_customer_id = Column(String, nullable=True, index=True)
-#        stripe_subscription_id = Column(String, nullable=True)
-#        subscription_status = Column(String, nullable=True)
-#
-#    Then: alembic revision --autogenerate -m "Add Stripe billing fields"
-#          alembic upgrade head
-#
-# 3. app/core/config.py — add to Settings:
-#
-#        STRIPE_SECRET_KEY: str = ""
-#        STRIPE_WEBHOOK_SECRET: str = ""
-#        STRIPE_PRICE_PRO: str = ""
-#        STRIPE_PRICE_BUSINESS: str = ""
-#        FRONTEND_URL: str = "https://vsecrets.dev"
-#
-# 4. app/api/v1/router.py:
-#
-#        from app.api.v1 import billing
-#        api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
-#
-# 5. Verify no middleware consumes the request body before /billing/webhook.
-#    Signature verification needs the raw bytes.
-#
-# =============================================================================

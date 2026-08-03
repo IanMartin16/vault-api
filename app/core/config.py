@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_FREE: int = 1000
     RATE_LIMIT_STARTER: int = 10000
     RATE_LIMIT_PRO: int = 100000
+    RATE_LIMIT_BUSINESS: int = 500000
     RATE_LIMIT_ENTERPRISE: int = 1000000
     
     # ========================================
@@ -123,14 +124,17 @@ class Settings(BaseSettings):
     MAX_PROJECTS_FREE: int = 2
     MAX_PROJECTS_STARTER: int = 5
     MAX_PROJECTS_PRO: int = 20
+    MAX_PROJECTS_BUSINESS: int = 100
 
     MAX_SECRETS_FREE: int = 25
     MAX_SECRETS_STARTER: int = 100
     MAX_SECRETS_PRO: int = 1000
+    MAX_SECRETS_BUSINESS: int = 10000
 
     MAX_API_KEYS_FREE: int = 2
     MAX_API_KEYS_STARTER: int = 10
-    MAX_API_KEYS_PRO: int = 50
+    MAX_API_KEYS_PRO: int = 50 
+    MAX_API_KEYS_BUSINESS: int = 200
 
     MAX_SECRET_SIZE_BYTES: int = 65536
     MAX_SECRET_VERSIONS: int = 10

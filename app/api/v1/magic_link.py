@@ -329,38 +329,3 @@ async def purge_stale_magic_links(db: AsyncSession) -> int:
     )
     await db.commit()
     return result.rowcount or 0
-
-
-# =============================================================================
-# WIRING CHECKLIST
-# =============================================================================
-#
-# 1. Move the MagicLinkToken class into app/models/magic_link.py and import it
-#    wherever your other models get registered (usually app/models/__init__.py),
-#    so Alembic sees it.
-#
-#        alembic revision --autogenerate -m "Add magic link tokens"   # LOCAL
-#        git add alembic/versions/... && git commit && git push
-#        # Railway applies it via: alembic upgrade head && uvicorn ...
-#
-# 2. app/core/config.py — add to Settings:
-#
-#        RESEND_API_KEY: str = ""
-#        MAGIC_LINK_FROM: str = "V-Secrets <noreply@vsecrets.dev>"
-#        # FRONTEND_URL already added for billing
-#
-# 3. app/api/v1/router.py — mount under the SAME prefix as the auth router so
-#    the paths come out as /auth/magic-link/*:
-#
-#        from app.api.v1 import magic_link
-#        api_router.include_router(magic_link.router, prefix="/auth", tags=["auth"])
-#
-# 4. Railway env vars:
-#
-#        RESEND_API_KEY=re_...
-#        MAGIC_LINK_FROM="V-Secrets <noreply@vsecrets.dev>"
-#
-# 5. Resend: verify vsecrets.dev as a sending domain (SPF + DKIM records) before
-#    this works. Unverified domains only deliver to your own address.
-#
-# =============================================================================

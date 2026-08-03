@@ -38,6 +38,13 @@ def get_plan_limits(plan: str) -> dict:
             "requests_per_minute": 1000,
             "monthly_requests": settings.RATE_LIMIT_PRO,
         },
+        "business": {
+            "projects": getattr(settings, "MAX_PROJECTS_BUSINESS", 100),
+            "secrets_per_project": getattr(settings, "MAX_SECRETS_BUSINESS", 10000),
+            "api_keys": getattr(settings, "MAX_API_KEYS_BUSINESS", 200),
+            "requests_per_minute": 2500,
+            "monthly_requests": getattr(settings, "RATE_LIMIT_BUSINESS", 500000),
+        },
         "enterprise": {
             "projects": None,
             "secrets_per_project": None,
