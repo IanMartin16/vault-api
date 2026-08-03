@@ -15,6 +15,7 @@ from app.core.exceptions import (
     ForbiddenError,
     ProjectLimitExceededError,
     DuplicateSecretError,
+    ProjectNotFoundError,
     PlanLimitExceededError
 )
 
@@ -137,9 +138,9 @@ class ProjectService:
         
         # Get project and verify ownership
         project = await self.get_project_by_id(project_id, user_id)
-        
+
         if not project:
-            raise DuplicateProjectError("Project already exists")
+            raise ProjectNotFoundError("Project not found or access denied")
         
         # Update fields if provided
         if project_data.name is not None:
@@ -197,20 +198,18 @@ class ProjectService:
     
     async def _check_project_limit(self, user: User) -> None:
         """Check if user has reached their project limit."""
-
-        stmt = select(func.count(Project.id)).where(
-            Project.owner_id == user.id
-        )
-        result = await self.db.execute(stmt)
-        project_count = result.scalar() or 0
-
         limits = get_plan_limits(user.plan)
         max_projects = limits["projects"]
 
+        # Unlimited plans skip the count entirely
         if max_projects is None:
             return
 
+        stmt = select(func.count(Project.id)).where(Project.owner_id == user.id)
+        result = await self.db.execute(stmt)
+        project_count = result.scalar() or 0
+
         if project_count >= max_projects:
             raise ProjectLimitExceededError(
-                "Project limit reached for your plan"
-        )
+                f"Your plan allows {max_projects} projects. Upgrade to add more."
+            )

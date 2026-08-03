@@ -1,6 +1,7 @@
 from typing import Annotated, Literal, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status, Request
+from app.core.login_protection import is_locked_out, record_attempt
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,7 +12,7 @@ import structlog
 from app.api.deps import get_db
 from app.schemas.user import UserCreate, UserLogin, Token
 from app.models.user import User
-from app.core.security import verify_password, get_password_hash, create_access_token, create_refresh_token
+from app.core.security import password_needs_rehash, verify_password, get_password_hash, create_access_token, create_refresh_token
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -81,30 +82,29 @@ async def register(
 @router.post("/login", response_model=Token)
 async def login(
     credentials: UserLogin,
-    db: AsyncSession = Depends(get_db)
+    request: Request,              # ← Request se usa aquí
+    db: AsyncSession = Depends(get_db),
 ):
-    """
-    Login and get access token.
-    
-    Validates credentials and returns JWT tokens.
-    """
-    # Find user
-    stmt = select(User).where(User.email == credentials.email)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    
-    # Validate credentials
-    if not user or not verify_password(credentials.password, user.hashed_password):
-        logger.warning(
-            "login_failed",
-            email=credentials.email,
-            reason="invalid_credentials"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    email = credentials.email.lower().strip()
+    client_ip = request.client.host if request.client else None
+
+    # is_locked_out se usa aquí, antes de hashear
+    locked, reason = await is_locked_out(db, email=email, ip_address=client_ip)
+    if locked:
+        await record_attempt(db, email=email, ip_address=client_ip, succeeded=False)
+        await db.commit()
+        logger.warning("login_locked_out", email=email, ip=client_ip, reason=reason)
+        raise generic_failure
+
+    # ... verificación ...
+
+    # password_needs_rehash se usa tras un login exitoso
+    if password_needs_rehash(user.hashed_password):
+        user.hashed_password = get_password_hash(credentials.password)
+        logger.info("password_hash_upgraded", user_id=str(user.id))
+
+    # record_attempt también en el camino de éxito
+    await record_attempt(db, email=email, ip_address=client_ip, succeeded=True)
     
     # Check if user is active
     if not user.is_active:
