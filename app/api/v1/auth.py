@@ -5,6 +5,7 @@ from app.core.login_protection import is_locked_out, record_attempt
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from datetime import datetime
 from jose import JWTError, jwt
 from datetime import timedelta
 import structlog
@@ -82,13 +83,22 @@ async def register(
 @router.post("/login", response_model=Token)
 async def login(
     credentials: UserLogin,
-    request: Request,              # ← Request se usa aquí
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     email = credentials.email.lower().strip()
     client_ip = request.client.host if request.client else None
 
-    # is_locked_out se usa aquí, antes de hashear
+    # One message for every failure mode. Distinguishing "wrong password" from
+    # "no such account" from "locked out" hands an attacker a free oracle.
+    generic_failure = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Incorrect email or password",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    # 1. Gate BEFORE hashing. Argon2id costs 64 MiB per call — letting a locked
+    #    attacker reach the hash step turns this endpoint into a memory DoS.
     locked, reason = await is_locked_out(db, email=email, ip_address=client_ip)
     if locked:
         await record_attempt(db, email=email, ip_address=client_ip, succeeded=False)
@@ -96,48 +106,51 @@ async def login(
         logger.warning("login_locked_out", email=email, ip=client_ip, reason=reason)
         raise generic_failure
 
-    # ... verificación ...
+    # 2. Look up the user
+    stmt = select(User).where(User.email == email)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
 
-    # password_needs_rehash se usa tras un login exitoso
+    # 3. Verify. Hash even when the user doesn't exist, so response timing
+    #    doesn't reveal which addresses are registered.
+    if user is None:
+        get_password_hash("timing-equalisation-dummy")
+        await record_attempt(db, email=email, ip_address=client_ip, succeeded=False)
+        await db.commit()
+        raise generic_failure
+
+    if not verify_password(credentials.password, user.hashed_password):
+        await record_attempt(db, email=email, ip_address=client_ip, succeeded=False)
+        await db.commit()
+        logger.warning("login_failed", user_id=str(user.id), ip=client_ip)
+        raise generic_failure
+
+    if not user.is_active:
+        await record_attempt(db, email=email, ip_address=client_ip, succeeded=False)
+        await db.commit()
+        raise HTTPException(status_code=403, detail="Account is inactive")
+
+    # 4. Success — upgrade a legacy bcrypt hash while the plaintext is in scope
     if password_needs_rehash(user.hashed_password):
         user.hashed_password = get_password_hash(credentials.password)
         logger.info("password_hash_upgraded", user_id=str(user.id))
 
-    # record_attempt también en el camino de éxito
     await record_attempt(db, email=email, ip_address=client_ip, succeeded=True)
-    
-    # Check if user is active
-    if not user.is_active:
-        logger.warning(
-            "login_failed",
-            email=credentials.email,
-            user_id=str(user.id),
-            reason="inactive_account"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is inactive"
-        )
-    
-    # Create tokens
+    user.last_login = datetime.utcnow()
+    await db.commit()
+
     access_token = create_access_token(
         subject=str(user.id),
-        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-    refresh_token = create_refresh_token(
-        subject=str(user.id)
-    )
-    
-    logger.info(
-        "user_logged_in",
-        user_id=str(user.id),
-        email=user.email
-    )
-    
+    refresh_token = create_refresh_token(subject=str(user.id))
+
+    logger.info("user_logged_in", user_id=str(user.id), ip=client_ip)
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
     }
 
 class OAuthProvisionRequest(BaseModel):
